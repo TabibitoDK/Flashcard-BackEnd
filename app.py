@@ -1,7 +1,7 @@
 import os
 import threading
 import time
-from main import bot, app, run_bot
+from main import bot, app, run_bot, run_api
 
 def start_bot():
     """Start the Discord bot in background"""
@@ -11,16 +11,12 @@ def start_bot():
         print(f"Bot error: {e}")
 
 # Start Discord bot in background thread
-if __name__ == "__main__":
-    # Start bot in background
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    # Give the bot a moment to start
-    time.sleep(2)
+bot_thread = threading.Thread(target=start_bot, daemon=True)
+bot_thread.start()
 
-# Export the FastAPI app for Hugging Face Spaces
-if __name__ != "__main__":
-    # Start bot when module is imported
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
+# Optional: Give the bot some time
+time.sleep(2)
+
+# Start FastAPI app if run directly (for docker)
+if __name__ == "__main__":
+    run_api()

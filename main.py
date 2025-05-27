@@ -71,6 +71,9 @@ async def get_flashcard_folders():
     
     folders = []
     for channel in category.text_channels:
+        # Exclude 'challengehistory' by name
+        if channel.name.lower() == 'challengehistory':
+            continue
         # Count flashcards (messages without replies)
         flashcard_count = 0
         async for message in channel.history(limit=None):

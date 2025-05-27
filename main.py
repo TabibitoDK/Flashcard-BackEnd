@@ -52,15 +52,21 @@ async def on_ready():
 
 async def get_flashcard_folders():
     """Get all flashcard folders (channels in flashcard category)"""
-    if not guild_id or not flashcard_category_id:
+    if not guild_id:
+        print("Error: guild_id is None")
         return []
-    
+    if not flashcard_category_id:
+        print("Error: flashcard_category_id is None")
+        return []
+
     guild = bot.get_guild(guild_id)
     if not guild:
+        print("Error: Guild not found with id", guild_id)
         return []
-    
+
     category = discord.utils.get(guild.categories, id=flashcard_category_id)
     if not category:
+        print("Error: Flashcard category not found with id", flashcard_category_id)
         return []
     
     folders = []
@@ -196,10 +202,13 @@ async def root():
 async def get_flashcard_lists():
     """Get list of all flashcard folders"""
     try:
+        if not bot.is_ready():
+            raise HTTPException(status_code=503, detail="Bot is not ready yet. Please try again in a few seconds.")
         folders = await get_flashcard_folders()
         return JSONResponse(content=folders)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 @app.get("/flashcard-folder/{folder_id}")
 async def get_flashcard_folder(folder_id: str):

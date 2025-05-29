@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import asyncio
 import threading
 import uvicorn
@@ -17,6 +18,11 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # FastAPI Setup
 app = FastAPI(title="Discord Flashcard Bot API")
+
+# Pydantic models for request validation
+class ChallengeResult(BaseModel):
+    correct: int
+    incorrect: int
 
 # Global variables
 guild_id = None
@@ -65,10 +71,16 @@ async def get_flashcard_folders():
             if not message.reference:
                 flashcard_count += 1
 
+        # Get statistics for this folder
+        stats = await get_folder_statistics(str(channel.id))
+        
         folders.append({
             "folder_id": str(channel.id),
             "folder_name": channel.name,
-            "total_flashcards": flashcard_count
+            "total_flashcards": flashcard_count,
+            "total_correct": stats["total_correct"],
+            "total_incorrect": stats["total_incorrect"],
+            "total_challenges": stats["total_challenges"]
         })
 
     return folders
@@ -110,26 +122,99 @@ async def get_challenge_history():
     guild = bot.get_guild(guild_id)
     channel = guild.get_channel(challenge_history_channel_id)
 
+    history_records = []
     async for message in channel.history(limit=1):
         if message.content.strip():
-            return [line.strip() for line in message.content.strip().split('\n') if line.strip()]
-    return []
+            lines = [line.strip() for line in message.content.strip().split('\n') if line.strip()]
+            for line in lines:
+                try:
+                    # Parse JSON format: {"folder_id": "123", "correct": 5, "incorrect": 2, "timestamp": "..."}
+                    record = json.loads(line)
+                    history_records.append(record)
+                except json.JSONDecodeError:
+                    # Handle old format (just folder_id) for backward compatibility
+                    if line.isdigit():
+                        history_records.append({
+                            "folder_id": line,
+                            "correct": 0,
+                            "incorrect": 0,
+                            "timestamp": "unknown"
+                        })
+    return history_records
 
-async def update_challenge_history(folder_id: str):
+async def get_folder_statistics(folder_id: str):
+    """Get aggregated statistics for a specific folder"""
+    history = await get_challenge_history()
+    
+    total_correct = 0
+    total_incorrect = 0
+    total_challenges = 0
+    
+    for record in history:
+        if record.get("folder_id") == folder_id:
+            total_correct += record.get("correct", 0)
+            total_incorrect += record.get("incorrect", 0)
+            total_challenges += 1
+    
+    return {
+        "total_correct": total_correct,
+        "total_incorrect": total_incorrect,
+        "total_challenges": total_challenges
+    }
+
+async def update_challenge_history(folder_id: str, correct: int, incorrect: int):
     if not guild_id or not challenge_history_channel_id:
         return False
 
     guild = bot.get_guild(guild_id)
     channel = guild.get_channel(challenge_history_channel_id)
 
+    # Create new record
+    from datetime import datetime
+    new_record = {
+        "folder_id": folder_id,
+        "correct": correct,
+        "incorrect": incorrect,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    # Get existing history
+    current_records = []
     async for message in channel.history(limit=1):
-        current_history = message.content.strip().split('\n') if message.content.strip() else []
-        new_history = [folder_id] + [h for h in current_history if h.strip()]
-        new_history = new_history[:10]
-        await message.edit(content='\n'.join(new_history))
-        return True
-
-    await channel.send(folder_id)
+        if message.content.strip():
+            lines = [line.strip() for line in message.content.strip().split('\n') if line.strip()]
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                    current_records.append(record)
+                except json.JSONDecodeError:
+                    # Handle old format for backward compatibility
+                    if line.isdigit():
+                        current_records.append({
+                            "folder_id": line,
+                            "correct": 0,
+                            "incorrect": 0,
+                            "timestamp": "unknown"
+                        })
+        break
+    
+    # Add new record at the beginning and limit to 50 records
+    updated_records = [new_record] + current_records[:49]
+    
+    # Convert back to string format
+    history_lines = [json.dumps(record) for record in updated_records]
+    new_content = '\n'.join(history_lines)
+    
+    # Update or create message
+    message_found = False
+    async for message in channel.history(limit=1):
+        await message.edit(content=new_content)
+        message_found = True
+        break
+    
+    if not message_found:
+        await channel.send(new_content)
+    
     return True
 
 # ========== FastAPI Endpoints ==========
@@ -175,14 +260,33 @@ async def get_challenge_history_api():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/done-challenge/{folder_id}")
-async def done_challenge(folder_id: str):
+@app.get("/folder-statistics/{folder_id}")
+async def get_folder_statistics_api(folder_id: str):
     try:
         if not bot.is_ready():
             raise HTTPException(status_code=503, detail="Bot is not ready yet.")
-        success = run_discord_coro(update_challenge_history(folder_id))
+        stats = run_discord_coro(get_folder_statistics(folder_id))
+        return JSONResponse(content=stats)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/done-challenge/{folder_id}")
+async def done_challenge(folder_id: str, result: ChallengeResult):
+    try:
+        if not bot.is_ready():
+            raise HTTPException(status_code=503, detail="Bot is not ready yet.")
+        
+        if result.correct < 0 or result.incorrect < 0:
+            raise HTTPException(status_code=400, detail="Correct and incorrect counts must be non-negative")
+        
+        success = run_discord_coro(update_challenge_history(folder_id, result.correct, result.incorrect))
         if success:
-            return JSONResponse(content={"message": "Challenge history updated successfully"})
+            return JSONResponse(content={
+                "message": "Challenge history updated successfully",
+                "folder_id": folder_id,
+                "correct": result.correct,
+                "incorrect": result.incorrect
+            })
         else:
             raise HTTPException(status_code=500, detail="Failed to update challenge history")
     except Exception as e:
